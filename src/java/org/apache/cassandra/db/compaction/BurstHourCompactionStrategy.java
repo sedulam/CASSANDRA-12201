@@ -19,9 +19,11 @@
 package org.apache.cassandra.db.compaction;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 
 /**
@@ -30,9 +32,18 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
  */
 public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 {
+    private int referenced_sstable_limit = 3;
+
     public BurstHourCompactionStrategy(ColumnFamilyStore cfs, Map<String, String> options)
     {
         super(cfs, options);
+    }
+
+    private Map<String, List<SSTable>> gatherTablesToCompact(){
+        for(SSTableReader ssTableReader : cfs.getUncompactingSSTables()){
+            
+        }
+
     }
 
     /**
