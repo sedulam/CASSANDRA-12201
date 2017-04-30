@@ -18,13 +18,21 @@
 
 package org.apache.cassandra.db.compaction;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.io.sstable.KeyIterator;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+
+import static com.google.common.collect.Iterables.filter;
 
 /**
  * This strategy tries to take advantage of periods of the day where there's less I/O.
@@ -33,17 +41,46 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
 public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 {
     private int referenced_sstable_limit = 3;
+    private final Set<SSTableReader> sstables = new HashSet<>();
 
     public BurstHourCompactionStrategy(ColumnFamilyStore cfs, Map<String, String> options)
     {
         super(cfs, options);
     }
 
-    private Map<String, List<SSTable>> gatherTablesToCompact(){
-        for(SSTableReader ssTableReader : cfs.getUncompactingSSTables()){
-            
+    private Map<DecoratedKey, List<SSTableReader>> gatherSSTablesToCompact(){
+
+        Iterable<SSTableReader> candidates = filterSuspectSSTables(filter(cfs.getUncompactingSSTables(), sstables::contains));
+
+        Map<DecoratedKey, List<SSTableReader>> keyToTablesMap = new HashMap<>();
+
+        for(SSTableReader ssTableReader : candidates){
+            try(KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata))
+            {
+                while (keyIterator.hasNext())
+                {
+                    DecoratedKey key = keyIterator.next();
+
+                    if (!keyToTablesMap.containsKey(key))
+                    {
+                        List<SSTableReader> tablesWithThisKey = new ArrayList<>();
+                        tablesWithThisKey.add(ssTableReader);
+                        keyToTablesMap.put(key, tablesWithThisKey);
+                    }
+                }
+            }
         }
 
+        // Filter out the keys that are in less than referenced_sstable_limit SSTables
+        Map<DecoratedKey, List<SSTableReader>> keyCountAboveThreshold = new HashMap<>();
+        for(DecoratedKey key: keyToTablesMap.keySet()){
+            List<SSTableReader> keyReferences = keyCountAboveThreshold.get(key);
+            if (keyReferences.size() >= referenced_sstable_limit){
+                keyCountAboveThreshold.put(key, keyReferences);
+            }
+        }
+
+        return keyCountAboveThreshold;
     }
 
     /**
@@ -101,7 +138,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 
     public void addSSTable(SSTableReader added)
     {
-
+        sstables.add(added);
     }
 
     public void removeSSTable(SSTableReader sstable)
