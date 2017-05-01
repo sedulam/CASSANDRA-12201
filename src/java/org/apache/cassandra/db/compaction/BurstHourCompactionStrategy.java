@@ -18,19 +18,23 @@
 
 package org.apache.cassandra.db.compaction;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
+import org.apache.cassandra.exceptions.CompactionException;
+import org.apache.cassandra.exceptions.ExceptionCode;
 import org.apache.cassandra.io.sstable.KeyIterator;
-import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.utils.Pair;
+import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 import static com.google.common.collect.Iterables.filter;
 
@@ -48,35 +52,62 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         super(cfs, options);
     }
 
-    private Map<DecoratedKey, List<SSTableReader>> gatherSSTablesToCompact(){
-
+    private Map<DecoratedKey, Pair<String, Set<SSTableReader>>> getAllKeyReferences()
+    {
         Iterable<SSTableReader> candidates = filterSuspectSSTables(filter(cfs.getUncompactingSSTables(), sstables::contains));
 
-        Map<DecoratedKey, List<SSTableReader>> keyToTablesMap = new HashMap<>();
-
+        // Get all the keys and the corresponding SSTables in which they exist
+        Map<DecoratedKey, Pair<String, Set<SSTableReader>>> keyToTablesMap = new HashMap<>();
         for(SSTableReader ssTableReader : candidates){
             try(KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata))
             {
                 while (keyIterator.hasNext())
                 {
-                    DecoratedKey key = keyIterator.next();
+                    DecoratedKey partitionKey = keyIterator.next();
 
-                    if (!keyToTablesMap.containsKey(key))
+                    Pair<String, Set<SSTableReader>> references;
+                    Set<SSTableReader> ssTablesWithThisKey = null;
+                    if (keyToTablesMap.containsKey(partitionKey))
                     {
-                        List<SSTableReader> tablesWithThisKey = new ArrayList<>();
-                        tablesWithThisKey.add(ssTableReader);
-                        keyToTablesMap.put(key, tablesWithThisKey);
+                        references = keyToTablesMap.get(partitionKey);
+                    }
+                    else
+                    {
+                        ssTablesWithThisKey = new HashSet<>();
+                        references = Pair.create(ssTableReader.getColumnFamilyName(), ssTablesWithThisKey);
+                        keyToTablesMap.put(partitionKey, references);
+                    }
+
+                    if (ssTablesWithThisKey != null)
+                    {
+                        ssTablesWithThisKey.add(ssTableReader);
+                    }
+                    else
+                    {
+                        throw new CompactionException(ExceptionCode.SERVER_ERROR, "SSTables reference set cannot be null at this point");
                     }
                 }
             }
         }
+        return keyToTablesMap;
+    }
+
+    private Set<SSTableReader> gatherSSTablesToCompact(){
+
+        Map<DecoratedKey, Pair<String, Set<SSTableReader>>> allReferences = getAllKeyReferences();
 
         // Filter out the keys that are in less than referenced_sstable_limit SSTables
-        Map<DecoratedKey, List<SSTableReader>> keyCountAboveThreshold = new HashMap<>();
-        for(DecoratedKey key: keyToTablesMap.keySet()){
-            List<SSTableReader> keyReferences = keyCountAboveThreshold.get(key);
+        Map<String, Set> keyCountAboveThreshold = new HashMap<>();
+        for(DecoratedKey key: allReferences.keySet()){
+            List<SSTableReader> keyReferences = allReferences.get(key);
+            String tableName = keyReferences.get(0).getColumnFamilyName();
             if (keyReferences.size() >= referenced_sstable_limit){
-                keyCountAboveThreshold.put(key, keyReferences);
+
+                if (keyCountAboveThreshold.containsKey(tableName)){
+                    // Because we're using a set, duplicates won't be an issue
+                    keyCountAboveThreshold.get(tableName).(keyReferences);
+
+                }
             }
         }
 
@@ -87,11 +118,20 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      * @param gcBefore throw away tombstones older than this
      * @return the next background/minor compaction task to run; null if nothing to do.
      * <p>
+     * TODO does the following line still applies? If not, change the superclass doc
      * Is responsible for marking its sstables as compaction-pending.
      */
     public AbstractCompactionTask getNextBackgroundTask(int gcBefore)
     {
-        return null;
+        Set<SSTableReader> ssTablesToCompact = gatherSSTablesToCompact();
+
+        if (ssTablesToCompact.size() == 0){
+            return null;
+        }
+        else {
+            LifecycleTransaction transaction = cfs.getTracker().tryModify(ssTablesToCompact, OperationType.COMPACTION);
+            return new CompactionTask(cfs, transaction, gcBefore);
+        }
     }
 
     /**
@@ -104,7 +144,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public Collection<AbstractCompactionTask> getMaximalTask(int gcBefore, boolean splitOutput)
     {
-        return null;
+        throw new NotImplementedException();
     }
 
     /**
@@ -117,7 +157,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public AbstractCompactionTask getUserDefinedTask(Collection<SSTableReader> sstables, int gcBefore)
     {
-        return null;
+        throw new NotImplementedException();
     }
 
     /**
@@ -125,7 +165,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public int getEstimatedRemainingTasks()
     {
-        return 0;
+        throw new NotImplementedException();
     }
 
     /**
@@ -133,16 +173,16 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public long getMaxSSTableBytes()
     {
-        return 0;
+        throw new NotImplementedException();
     }
 
     public void addSSTable(SSTableReader added)
     {
-        sstables.add(added);
+        throw new NotImplementedException();
     }
 
     public void removeSSTable(SSTableReader sstable)
     {
-
+        throw new NotImplementedException();
     }
 }
