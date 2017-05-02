@@ -21,14 +21,16 @@ package org.apache.cassandra.db.compaction;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
+import org.apache.cassandra.db.partitions.Partition;
 import org.apache.cassandra.exceptions.CompactionException;
 import org.apache.cassandra.exceptions.ExceptionCode;
 import org.apache.cassandra.io.sstable.KeyIterator;
@@ -44,43 +46,47 @@ import static com.google.common.collect.Iterables.filter;
  */
 public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 {
+    private volatile int estimatedRemainingTasks;
     private int referenced_sstable_limit = 3;
     private final Set<SSTableReader> sstables = new HashSet<>();
+    private static final Logger logger = LoggerFactory.getLogger(BurstHourCompactionStrategy.class);
 
     public BurstHourCompactionStrategy(ColumnFamilyStore cfs, Map<String, String> options)
     {
         super(cfs, options);
+        estimatedRemainingTasks = 0;
     }
 
     private Map<DecoratedKey, Pair<String, Set<SSTableReader>>> getAllKeyReferences()
     {
-        Iterable<SSTableReader> candidates = filterSuspectSSTables(filter(cfs.getUncompactingSSTables(), sstables::contains));
+        Iterable<SSTableReader> candidates = filterSuspectSSTables(cfs.getUncompactingSSTables());
 
         // Get all the keys and the corresponding SSTables in which they exist
         Map<DecoratedKey, Pair<String, Set<SSTableReader>>> keyToTablesMap = new HashMap<>();
-        for(SSTableReader ssTableReader : candidates){
-            try(KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata))
+        for(SSTableReader ssTable : candidates){
+            try(KeyIterator keyIterator = new KeyIterator(ssTable.descriptor, cfs.metadata))
             {
                 while (keyIterator.hasNext())
                 {
                     DecoratedKey partitionKey = keyIterator.next();
 
                     Pair<String, Set<SSTableReader>> references;
-                    Set<SSTableReader> ssTablesWithThisKey = null;
+                    Set<SSTableReader> ssTablesWithThisKey;
                     if (keyToTablesMap.containsKey(partitionKey))
                     {
                         references = keyToTablesMap.get(partitionKey);
+                        ssTablesWithThisKey = references.right;
                     }
                     else
                     {
                         ssTablesWithThisKey = new HashSet<>();
-                        references = Pair.create(ssTableReader.getColumnFamilyName(), ssTablesWithThisKey);
+                        references = Pair.create(ssTable.getColumnFamilyName(), ssTablesWithThisKey);
                         keyToTablesMap.put(partitionKey, references);
                     }
 
                     if (ssTablesWithThisKey != null)
                     {
-                        ssTablesWithThisKey.add(ssTableReader);
+                        ssTablesWithThisKey.add(ssTable);
                     }
                     else
                     {
@@ -89,29 +95,68 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                 }
             }
         }
+
         return keyToTablesMap;
+    }
+
+    /**
+     * Filter out the keys that are in less than referenced_sstable_limit SSTables
+     * @return map with SSTables that share the same partition key more than referenced_sstable_limit amount
+     */
+    private Map<String, Set<SSTableReader>> removeColdBuckets(Map<DecoratedKey, Pair<String, Set<SSTableReader>>> allReferences)
+    {
+        Map<String, Set<SSTableReader>> keyCountAboveThreshold = new HashMap<>();
+
+        for(Map.Entry<DecoratedKey, Pair<String, Set<SSTableReader>>> entry : allReferences.entrySet())
+        {
+            Pair<String, Set<SSTableReader>> keyReferences = entry.getValue();
+            if (keyReferences.right.size() >= referenced_sstable_limit)
+            {
+                String tableName = keyReferences.left;
+                if (keyCountAboveThreshold.containsKey(tableName))
+                {
+                    // Because we're using a set, duplicates won't be an issue
+                    keyCountAboveThreshold.get(tableName).addAll(keyReferences.right);
+                }
+                else
+                {
+                    Set<SSTableReader> ssTablesSet = new HashSet<>();
+                    ssTablesSet.addAll(keyReferences.right);
+                    keyCountAboveThreshold.put(tableName, ssTablesSet);
+                }
+            }
+        }
+
+        return keyCountAboveThreshold;
+    }
+
+    private Set<SSTableReader> selectHottestBucket(Map<String, Set<SSTableReader>> allBuckets)
+    {
+        long maxReferences = 0;
+        Set<SSTableReader> hottestSet = null;
+
+        for(Set<SSTableReader> set: allBuckets.values())
+        {
+            long setReferences = set.size();
+            if (setReferences > maxReferences)
+            {
+                maxReferences = setReferences;
+                hottestSet = set;
+            }
+        }
+
+        return hottestSet;
     }
 
     private Set<SSTableReader> gatherSSTablesToCompact(){
 
         Map<DecoratedKey, Pair<String, Set<SSTableReader>>> allReferences = getAllKeyReferences();
 
-        // Filter out the keys that are in less than referenced_sstable_limit SSTables
-        Map<String, Set> keyCountAboveThreshold = new HashMap<>();
-        for(DecoratedKey key: allReferences.keySet()){
-            List<SSTableReader> keyReferences = allReferences.get(key);
-            String tableName = keyReferences.get(0).getColumnFamilyName();
-            if (keyReferences.size() >= referenced_sstable_limit){
+        Map<String, Set<SSTableReader>> hotBuckets = removeColdBuckets(allReferences);
 
-                if (keyCountAboveThreshold.containsKey(tableName)){
-                    // Because we're using a set, duplicates won't be an issue
-                    keyCountAboveThreshold.get(tableName).(keyReferences);
+        estimatedRemainingTasks = hotBuckets.size();
 
-                }
-            }
-        }
-
-        return keyCountAboveThreshold;
+        return selectHottestBucket(hotBuckets);
     }
 
     /**
@@ -165,7 +210,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public int getEstimatedRemainingTasks()
     {
-        throw new NotImplementedException();
+        return estimatedRemainingTasks;
     }
 
     /**
@@ -173,16 +218,16 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public long getMaxSSTableBytes()
     {
-        throw new NotImplementedException();
+        return Long.MAX_VALUE;
     }
 
     public void addSSTable(SSTableReader added)
     {
-        throw new NotImplementedException();
+        sstables.add(added);
     }
 
     public void removeSSTable(SSTableReader sstable)
     {
-        throw new NotImplementedException();
+        sstables.remove(sstable);
     }
 }
