@@ -106,6 +106,11 @@ class Cql3ParsingRuleSet(CqlParsingRuleSet):
         'timestamp_resolution'
     )
 
+    burst_hour_compaction_strategy_options = (
+        'start_time',
+        'end_time'
+    )
+
     @classmethod
     def escape_value(cls, value):
         if value is None:
@@ -540,6 +545,8 @@ def cf_prop_val_mapkey_completer(ctxt, cass):
             opts = opts.union(set(CqlRuleSet.date_tiered_compaction_strategy_options))
         elif csc == 'TimeWindowCompactionStrategy':
             opts = opts.union(set(CqlRuleSet.time_window_compaction_strategy_options))
+        elif csc == 'BurstHourCompactionStrategy':
+            opts = opts.union(set(CqlRuleSet.burst_hour_compaction_strategy_options))
 
         return map(escape_value, opts)
     return ()

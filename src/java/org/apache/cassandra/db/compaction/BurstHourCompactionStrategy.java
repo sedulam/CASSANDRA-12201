@@ -18,6 +18,7 @@
 
 package org.apache.cassandra.db.compaction;
 
+import java.time.LocalTime;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,15 +31,12 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
-import org.apache.cassandra.db.partitions.Partition;
 import org.apache.cassandra.exceptions.CompactionException;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.ExceptionCode;
 import org.apache.cassandra.io.sstable.KeyIterator;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.Pair;
-import sun.reflect.generics.reflectiveObjects.NotImplementedException;
-
-import static com.google.common.collect.Iterables.filter;
 
 /**
  * This strategy tries to take advantage of periods of the day where there's less I/O.
@@ -53,12 +51,15 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     private final Set<SSTableReader> sstables = new HashSet<>();
     //TODO add logging
     private static final Logger logger = LoggerFactory.getLogger(BurstHourCompactionStrategy.class);
+    private BurstHourCompactionStrategyOptions bhcsOptions;
 
     public BurstHourCompactionStrategy(ColumnFamilyStore cfs, Map<String, String> options)
     {
         super(cfs, options);
         estimatedRemainingTasks = 0;
+        bhcsOptions = new BurstHourCompactionStrategyOptions(options);
     }
+
 
     private Map<DecoratedKey, Pair<String, Set<SSTableReader>>> getAllKeyReferences()
     {
@@ -67,7 +68,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         // Get all the keys and the corresponding SSTables in which they exist
         Map<DecoratedKey, Pair<String, Set<SSTableReader>>> keyToTablesMap = new HashMap<>();
         for(SSTableReader ssTable : candidates){
-            try(KeyIterator keyIterator = new KeyIterator(ssTable.descriptor, cfs.metadata))
+            try(KeyIterator keyIterator = new KeyIterator(ssTable.descriptor, cfs.metadata()))
             {
                 while (keyIterator.hasNext())
                 {
@@ -87,14 +88,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                         keyToTablesMap.put(partitionKey, references);
                     }
 
-                    if (ssTablesWithThisKey != null)
-                    {
-                        ssTablesWithThisKey.add(ssTable);
-                    }
-                    else
-                    {
-                        throw new CompactionException(ExceptionCode.SERVER_ERROR, "SSTables reference set cannot be null at this point");
-                    }
+                    ssTablesWithThisKey.add(ssTable);
                 }
             }
         }
@@ -151,17 +145,6 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         return hottestSet;
     }
 
-    private Set<SSTableReader> gatherSSTablesToCompact(){
-
-        Map<DecoratedKey, Pair<String, Set<SSTableReader>>> allReferences = getAllKeyReferences();
-
-        Map<String, Set<SSTableReader>> hotBuckets = removeColdBuckets(allReferences);
-
-        estimatedRemainingTasks = hotBuckets.size();
-
-        return selectHottestBucket(hotBuckets);
-    }
-
     /**
      * @param gcBefore throw away tombstones older than this
      * @return the next background/minor compaction task to run; null if nothing to do.
@@ -171,7 +154,14 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public AbstractCompactionTask getNextBackgroundTask(int gcBefore)
     {
-        Set<SSTableReader> ssTablesToCompact = gatherSSTablesToCompact();
+        LocalTime now = LocalTime.now();
+        boolean isBurstHour = now.isAfter(bhcsOptions.startTime) && now.isBefore(bhcsOptions.endTime);
+        if (isBurstHour == false)
+        {
+            return null;
+        }
+
+        Set<SSTableReader> ssTablesToCompact = getSSTables();
         return createBhcsCompactionTask(ssTablesToCompact, gcBefore);
     }
 
@@ -181,7 +171,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      * @param gcBefore throw away tombstones older than this
      * @return a compaction task object which will be later used to run the compaction per se
      */
-    private AbstractCompactionTask createBhcsCompactionTask(Set<SSTableReader> tables, int gcBefore)
+    private AbstractCompactionTask createBhcsCompactionTask(Collection<SSTableReader> tables, int gcBefore)
     {
         if (tables.size() == 0){
             return null;
@@ -224,10 +214,11 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      * Will not be null. (Will throw if user requests an invalid compaction.)
      * <p>
      * Is responsible for marking its sstables as compaction-pending.
+     * TODO DTS, STCS and now BHCS all do basically the same thing in this method. Wouldn't it be better to define this in the superclass and LCS would override it?
      */
     public AbstractCompactionTask getUserDefinedTask(Collection<SSTableReader> sstables, int gcBefore)
     {
-        throw new NotImplementedException();
+        return createBhcsCompactionTask(sstables, gcBefore);
     }
 
     /**
@@ -255,5 +246,25 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     public void removeSSTable(SSTableReader sstable)
     {
         sstables.remove(sstable);
+    }
+
+    /**
+     * Returns the sstables managed by this strategy instance
+     */
+    protected Set<SSTableReader> getSSTables()
+    {
+        Map<DecoratedKey, Pair<String, Set<SSTableReader>>> allReferences = getAllKeyReferences();
+
+        Map<String, Set<SSTableReader>> hotBuckets = removeColdBuckets(allReferences);
+
+        estimatedRemainingTasks = hotBuckets.size();
+
+        return selectHottestBucket(hotBuckets);
+    }
+
+    public static Map<String, String> validateOptions(Map<String, String> options) throws ConfigurationException
+    {
+        Map<String, String> uncheckedOptions = AbstractCompactionStrategy.validateOptions(options);
+        return BurstHourCompactionStrategyOptions.validateOptions(options, uncheckedOptions);
     }
 }
