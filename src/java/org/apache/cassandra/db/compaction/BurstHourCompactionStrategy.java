@@ -44,11 +44,14 @@ import static com.google.common.collect.Iterables.filter;
  * This strategy tries to take advantage of periods of the day where there's less I/O.
  * Full description can be found at CASSANDRA-12201.
  */
+//
 public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 {
     private volatile int estimatedRemainingTasks;
     private int referenced_sstable_limit = 3;
+    //TODO do we really need this variable?
     private final Set<SSTableReader> sstables = new HashSet<>();
+    //TODO add logging
     private static final Logger logger = LoggerFactory.getLogger(BurstHourCompactionStrategy.class);
 
     public BurstHourCompactionStrategy(ColumnFamilyStore cfs, Map<String, String> options)
@@ -163,25 +166,35 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      * @param gcBefore throw away tombstones older than this
      * @return the next background/minor compaction task to run; null if nothing to do.
      * <p>
-     * TODO does the following line still applies? If not, change the superclass doc
+     * TODO does the following line still applies? If not, change the superclass doc. Repeat for other methods.
      * Is responsible for marking its sstables as compaction-pending.
      */
     public AbstractCompactionTask getNextBackgroundTask(int gcBefore)
     {
         Set<SSTableReader> ssTablesToCompact = gatherSSTablesToCompact();
+        return createBhcsCompactionTask(ssTablesToCompact, gcBefore);
+    }
 
-        if (ssTablesToCompact.size() == 0){
+    /**
+     * Creates the compaction task object.
+     * @param tables the tables we want to compact
+     * @param gcBefore throw away tombstones older than this
+     * @return a compaction task object which will be later used to run the compaction per se
+     */
+    private AbstractCompactionTask createBhcsCompactionTask(Set<SSTableReader> tables, int gcBefore)
+    {
+        if (tables.size() == 0){
             return null;
         }
         else {
-            LifecycleTransaction transaction = cfs.getTracker().tryModify(ssTablesToCompact, OperationType.COMPACTION);
+            LifecycleTransaction transaction = cfs.getTracker().tryModify(tables, OperationType.COMPACTION);
             return new CompactionTask(cfs, transaction, gcBefore);
         }
     }
 
     /**
      * @param gcBefore    throw away tombstones older than this
-     * @param splitOutput it's not relevant for this strategy
+     * @param splitOutput it's not relevant for this strategy because the strategy whole purpose to is always get a compaction as big as possible
      * @return a compaction task that should be run to compact this columnfamilystore
      * as much as possible.  Null if nothing to do.
      * <p>
@@ -189,7 +202,19 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public Collection<AbstractCompactionTask> getMaximalTask(int gcBefore, boolean splitOutput)
     {
-        throw new NotImplementedException();
+        Map<DecoratedKey, Pair<String, Set<SSTableReader>>> keyReferences = getAllKeyReferences();
+
+        Map<String, Set<SSTableReader>> hotBuckets = removeColdBuckets(keyReferences);
+
+        Set<AbstractCompactionTask> allTasks = new HashSet<>();
+
+        for(Set<SSTableReader> ssTables : hotBuckets.values())
+        {
+            AbstractCompactionTask task = createBhcsCompactionTask(ssTables, gcBefore);
+            allTasks.add(task);
+        }
+
+        return allTasks;
     }
 
     /**
@@ -218,6 +243,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public long getMaxSSTableBytes()
     {
+        //TODO why is every strategy, except for LCS, returing this value?
         return Long.MAX_VALUE;
     }
 
