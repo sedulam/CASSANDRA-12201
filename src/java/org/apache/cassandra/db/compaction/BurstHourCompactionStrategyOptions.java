@@ -24,9 +24,6 @@ import java.util.Map;
 
 import org.apache.cassandra.exceptions.ConfigurationException;
 
-/**
- * Created by Pedro Gordo on 06/05/17.
- */
 class BurstHourCompactionStrategyOptions
 {
     private static final String START_TIME_KEY = "start_time";
@@ -36,8 +33,7 @@ class BurstHourCompactionStrategyOptions
     private static final LocalTime defaultStartTime = LocalTime.MIDNIGHT;
     private static final LocalTime defaultEndTime = LocalTime.MIDNIGHT.plusHours(1);
 
-
-    protected BurstHourCompactionStrategyOptions(Map<String, String> options)
+    public BurstHourCompactionStrategyOptions(Map<String, String> options)
     {
         if (options == null)
         {
@@ -57,18 +53,24 @@ class BurstHourCompactionStrategyOptions
         String textEndTime = options.get(START_TIME_KEY);
         try
         {
-            LocalTime.parse(textStartTime);
-            LocalTime.parse(textEndTime);
+            if (textStartTime != null)
+            {
+                LocalTime.parse(textStartTime);
+            }
+            if (textEndTime != null)
+            {
+                LocalTime.parse(textEndTime);
+            }
         }
         catch (DateTimeParseException e)
         {
             throw new ConfigurationException("The value of " + e.getParsedString() + " could not be converted into a valid time", e);
         }
 
-        options.remove(START_TIME_KEY);
-        options.remove(END_TIME_KEY);
+        uncheckedOptions.remove(START_TIME_KEY);
+        uncheckedOptions.remove(END_TIME_KEY);
 
-        return options;
+        return uncheckedOptions;
     }
 }
 

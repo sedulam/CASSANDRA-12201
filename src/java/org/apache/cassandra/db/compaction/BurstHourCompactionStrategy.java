@@ -31,11 +31,10 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
-import org.apache.cassandra.exceptions.CompactionException;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.exceptions.ExceptionCode;
 import org.apache.cassandra.io.sstable.KeyIterator;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.schema.CompactionParams;
 import org.apache.cassandra.utils.Pair;
 
 /**
@@ -46,7 +45,6 @@ import org.apache.cassandra.utils.Pair;
 public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 {
     private volatile int estimatedRemainingTasks;
-    private int referenced_sstable_limit = 3;
     //TODO do we really need this variable?
     private final Set<SSTableReader> sstables = new HashSet<>();
     //TODO add logging
@@ -63,11 +61,14 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 
     private Map<DecoratedKey, Pair<String, Set<SSTableReader>>> getAllKeyReferences()
     {
+        int maxThreshold = cfs.getMaximumCompactionThreshold();
+
         Iterable<SSTableReader> candidates = filterSuspectSSTables(cfs.getUncompactingSSTables());
 
         // Get all the keys and the corresponding SSTables in which they exist
         Map<DecoratedKey, Pair<String, Set<SSTableReader>>> keyToTablesMap = new HashMap<>();
-        for(SSTableReader ssTable : candidates){
+        outer: for(SSTableReader ssTable : candidates)
+        {
             try(KeyIterator keyIterator = new KeyIterator(ssTable.descriptor, cfs.metadata()))
             {
                 while (keyIterator.hasNext())
@@ -88,7 +89,15 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                         keyToTablesMap.put(partitionKey, references);
                     }
 
-                    ssTablesWithThisKey.add(ssTable);
+                    if (ssTablesWithThisKey.size() < maxThreshold)
+                    {
+                        ssTablesWithThisKey.add(ssTable);
+                    }
+                    else
+                    {
+                        //Reached maximum number of SSTables to compact for a given key
+                        break outer;
+                    }
                 }
             }
         }
@@ -102,12 +111,14 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     private Map<String, Set<SSTableReader>> removeColdBuckets(Map<DecoratedKey, Pair<String, Set<SSTableReader>>> allReferences)
     {
+        int minThreshold = cfs.getMinimumCompactionThreshold();
+
         Map<String, Set<SSTableReader>> keyCountAboveThreshold = new HashMap<>();
 
         for(Map.Entry<DecoratedKey, Pair<String, Set<SSTableReader>>> entry : allReferences.entrySet())
         {
             Pair<String, Set<SSTableReader>> keyReferences = entry.getValue();
-            if (keyReferences.right.size() >= referenced_sstable_limit)
+            if (keyReferences.right.size() >= minThreshold)
             {
                 String tableName = keyReferences.left;
                 if (keyCountAboveThreshold.containsKey(tableName))
@@ -156,7 +167,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     {
         LocalTime now = LocalTime.now();
         boolean isBurstHour = now.isAfter(bhcsOptions.startTime) && now.isBefore(bhcsOptions.endTime);
-        if (isBurstHour == false)
+        if (!isBurstHour)
         {
             return null;
         }
@@ -265,6 +276,11 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     public static Map<String, String> validateOptions(Map<String, String> options) throws ConfigurationException
     {
         Map<String, String> uncheckedOptions = AbstractCompactionStrategy.validateOptions(options);
-        return BurstHourCompactionStrategyOptions.validateOptions(options, uncheckedOptions);
+        uncheckedOptions = BurstHourCompactionStrategyOptions.validateOptions(options, uncheckedOptions);
+
+        uncheckedOptions.remove(CompactionParams.Option.MIN_THRESHOLD.toString());
+        uncheckedOptions.remove(CompactionParams.Option.MAX_THRESHOLD.toString());
+
+        return uncheckedOptions;
     }
 }
