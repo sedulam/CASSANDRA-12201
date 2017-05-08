@@ -20,11 +20,16 @@ package org.apache.cassandra.db.compaction;
 
 import java.time.LocalTime;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
+import com.google.common.collect.ImmutableSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,7 +40,7 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.KeyIterator;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.CompactionParams;
-import org.apache.cassandra.utils.Pair;
+import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 /**
  * This strategy tries to take advantage of periods of the day where there's less I/O.
@@ -44,12 +49,13 @@ import org.apache.cassandra.utils.Pair;
 //
 public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 {
+    //TODO implement this
     private volatile int estimatedRemainingTasks;
     //TODO do we really need this variable?
     private final Set<SSTableReader> sstables = new HashSet<>();
     //TODO add logging
     private static final Logger logger = LoggerFactory.getLogger(BurstHourCompactionStrategy.class);
-    private BurstHourCompactionStrategyOptions bhcsOptions;
+    private final BurstHourCompactionStrategyOptions bhcsOptions;
 
     public BurstHourCompactionStrategy(ColumnFamilyStore cfs, Map<String, String> options)
     {
@@ -58,102 +64,94 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         bhcsOptions = new BurstHourCompactionStrategyOptions(options);
     }
 
-
-    private Map<DecoratedKey, Pair<String, Set<SSTableReader>>> getAllKeyReferences()
+    /**
+     * Check every key of every table, until we've hit the threshold for SSTables with key repetitions.
+     * @return a set of tables that share a set of the same keys
+     */
+    private Set<SSTableReader> getKeyReferences()
     {
+        Iterable<SSTableReader> candidates = filterSuspectSSTables(cfs.getUncompactingSSTables());
         int maxThreshold = cfs.getMaximumCompactionThreshold();
 
-        Iterable<SSTableReader> candidates = filterSuspectSSTables(cfs.getUncompactingSSTables());
-
-        // Get all the keys and the corresponding SSTables in which they exist
-        Map<DecoratedKey, Pair<String, Set<SSTableReader>>> keyToTablesMap = new HashMap<>();
-        outer: for(SSTableReader ssTable : candidates)
+        Set<SSTableReader> ssTablesToCompact = new HashSet<>();
+        for (SSTableReader ssTableReader : candidates)
         {
-            try(KeyIterator keyIterator = new KeyIterator(ssTable.descriptor, cfs.metadata()))
+            System.out.println("Searching table " + ssTableReader.getFilename());
+            ssTablesToCompact.addAll(searchSsTable(ssTableReader, candidates));
+            if (ssTablesToCompact.size() >= maxThreshold)
             {
-                while (keyIterator.hasNext())
-                {
-                    DecoratedKey partitionKey = keyIterator.next();
-
-                    Pair<String, Set<SSTableReader>> references;
-                    Set<SSTableReader> ssTablesWithThisKey;
-                    if (keyToTablesMap.containsKey(partitionKey))
-                    {
-                        references = keyToTablesMap.get(partitionKey);
-                        ssTablesWithThisKey = references.right;
-                    }
-                    else
-                    {
-                        ssTablesWithThisKey = new HashSet<>();
-                        references = Pair.create(ssTable.getColumnFamilyName(), ssTablesWithThisKey);
-                        keyToTablesMap.put(partitionKey, references);
-                    }
-
-                    if (ssTablesWithThisKey.size() < maxThreshold)
-                    {
-                        ssTablesWithThisKey.add(ssTable);
-                    }
-                    else
-                    {
-                        //Reached maximum number of SSTables to compact for a given key
-                        break outer;
-                    }
-                }
+                break;
             }
         }
 
-        return keyToTablesMap;
+        //TODO shall I add trimming of ssTablesToCompact until the reaches the maximum threshold?
+
+        return ssTablesToCompact;
     }
 
-    /**
-     * Filter out the keys that are in less than referenced_sstable_limit SSTables
-     * @return map with SSTables that share the same partition key more than referenced_sstable_limit amount
-     */
-    private Map<String, Set<SSTableReader>> removeColdBuckets(Map<DecoratedKey, Pair<String, Set<SSTableReader>>> allReferences)
+    private Set<SSTableReader> searchSsTable(SSTableReader ssTableReader, Iterable<SSTableReader> uncompactingSsTables)
     {
         int minThreshold = cfs.getMinimumCompactionThreshold();
+        int maxThreshold = cfs.getMaximumCompactionThreshold();
 
-        Map<String, Set<SSTableReader>> keyCountAboveThreshold = new HashMap<>();
+        Set<SSTableReader> tablesWithRepeatedKeys = new HashSet<>();
 
-        for(Map.Entry<DecoratedKey, Pair<String, Set<SSTableReader>>> entry : allReferences.entrySet())
+        // Get all the keys and the corresponding SSTables in which they exist
+        ExecutorService executor = Executors.newCachedThreadPool();
+        Set<Future<Set<SSTableReader>>> threads = new HashSet<>();
+
+        try(KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata()))
         {
-            Pair<String, Set<SSTableReader>> keyReferences = entry.getValue();
-            if (keyReferences.right.size() >= minThreshold)
+            while (keyIterator.hasNext())
             {
-                String tableName = keyReferences.left;
-                if (keyCountAboveThreshold.containsKey(tableName))
+                DecoratedKey key = keyIterator.next();
+
+                Callable callable = new KeyReferencesSearcher(key, uncompactingSsTables);
+                Future<Set<SSTableReader>> future = executor.submit(callable);
+                threads.add(future);
+            }
+        }
+
+        Set<Future> finishedThreads = new HashSet<>();
+        boolean allDone = false;
+        while (!allDone)
+        {
+            boolean cycleIsDone = true;
+            for (Future<Set<SSTableReader>> thread : threads)
+            {
+                if (thread.isDone() && !finishedThreads.contains(thread))
                 {
-                    // Because we're using a set, duplicates won't be an issue
-                    keyCountAboveThreshold.get(tableName).addAll(keyReferences.right);
+                    finishedThreads.add(thread);
+
+                    try
+                    {
+                        Set<SSTableReader> references = thread.get();
+                        if (references.size() >= minThreshold)
+                        {
+                            tablesWithRepeatedKeys. addAll(references);
+
+                            if (tablesWithRepeatedKeys.size() >= maxThreshold)
+                            {
+                                executor.shutdownNow();
+                                return tablesWithRepeatedKeys;
+                            }
+                        }
+                    }
+                    catch (InterruptedException | ExecutionException e)
+                    {
+                        logger.error("One of the threads responsible for finding key references terminated unexpectadly", e);
+                    }
                 }
                 else
                 {
-                    Set<SSTableReader> ssTablesSet = new HashSet<>();
-                    ssTablesSet.addAll(keyReferences.right);
-                    keyCountAboveThreshold.put(tableName, ssTablesSet);
+                    cycleIsDone = false;
                 }
             }
+            allDone = cycleIsDone;
+            System.out.println("Still need to finish " + (threads.size() - finishedThreads.size()) + " threads.");
         }
 
-        return keyCountAboveThreshold;
-    }
-
-    private Set<SSTableReader> selectHottestBucket(Map<String, Set<SSTableReader>> allBuckets)
-    {
-        long maxReferences = 0;
-        Set<SSTableReader> hottestSet = null;
-
-        for(Set<SSTableReader> set: allBuckets.values())
-        {
-            long setReferences = set.size();
-            if (setReferences > maxReferences)
-            {
-                maxReferences = setReferences;
-                hottestSet = set;
-            }
-        }
-
-        return hottestSet;
+        return tablesWithRepeatedKeys;
     }
 
     /**
@@ -172,7 +170,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
             return null;
         }
 
-        Set<SSTableReader> ssTablesToCompact = getSSTables();
+        Set<SSTableReader> ssTablesToCompact = getKeyReferences();
         return createBhcsCompactionTask(ssTablesToCompact, gcBefore);
     }
 
@@ -195,7 +193,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 
     /**
      * @param gcBefore    throw away tombstones older than this
-     * @param splitOutput it's not relevant for this strategy because the strategy whole purpose to is always get a compaction as big as possible
+     * @param splitOutput TODO
      * @return a compaction task that should be run to compact this columnfamilystore
      * as much as possible.  Null if nothing to do.
      * <p>
@@ -203,19 +201,21 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public Collection<AbstractCompactionTask> getMaximalTask(int gcBefore, boolean splitOutput)
     {
-        Map<DecoratedKey, Pair<String, Set<SSTableReader>>> keyReferences = getAllKeyReferences();
+        Iterable keyReferences = cfs.getUncompactingSSTables();
 
-        Map<String, Set<SSTableReader>> hotBuckets = removeColdBuckets(keyReferences);
+        LifecycleTransaction txn = cfs.getTracker().tryModify(keyReferences, OperationType.COMPACTION);
 
-        Set<AbstractCompactionTask> allTasks = new HashSet<>();
-
-        for(Set<SSTableReader> ssTables : hotBuckets.values())
+        if (splitOutput)
         {
-            AbstractCompactionTask task = createBhcsCompactionTask(ssTables, gcBefore);
-            allTasks.add(task);
+            //TODO
+            throw new NotImplementedException();
         }
-
-        return allTasks;
+        else
+        {
+            Set<AbstractCompactionTask> tasks = new HashSet<>(1);
+            tasks.add(new CompactionTask(cfs, txn, gcBefore));
+            return tasks;
+        }
     }
 
     /**
@@ -264,13 +264,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     protected Set<SSTableReader> getSSTables()
     {
-        Map<DecoratedKey, Pair<String, Set<SSTableReader>>> allReferences = getAllKeyReferences();
-
-        Map<String, Set<SSTableReader>> hotBuckets = removeColdBuckets(allReferences);
-
-        estimatedRemainingTasks = hotBuckets.size();
-
-        return selectHottestBucket(hotBuckets);
+        return ImmutableSet.copyOf(sstables);
     }
 
     public static Map<String, String> validateOptions(Map<String, String> options) throws ConfigurationException
@@ -282,5 +276,52 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         uncheckedOptions.remove(CompactionParams.Option.MAX_THRESHOLD.toString());
 
         return uncheckedOptions;
+    }
+
+
+    private static class KeyReferencesSearcher implements Callable
+    {
+        private final DecoratedKey key;
+        private final Iterable<SSTableReader> uncompactingSsTables;
+
+        private KeyReferencesSearcher(DecoratedKey key, Iterable<SSTableReader> uncompactingSsTables)
+        {
+            this.key = key;
+            this.uncompactingSsTables = uncompactingSsTables;
+        }
+
+        /**
+         * Returns the set of all the uncompacting SSTables which contain this key.
+         * @param key the key that we want to search in all of the SSTables
+         * @return set of table
+         */
+        private Set<SSTableReader> getUncompactingSSTablesForKey(DecoratedKey key)
+        {
+            Set<SSTableReader> ssTables = new HashSet<>();
+
+            System.out.println("Starting scan for key " + key.toString());
+
+            for (SSTableReader ssTable : uncompactingSsTables)
+            {
+                // check if the key actually exists in this sstable, without updating cache and stats
+                if (ssTable.getPosition(key, SSTableReader.Operator.EQ, false) != null)
+                    ssTables.add(ssTable);
+            }
+
+            System.out.println("Key " + key.toString() + " is referenced by " + ssTables.size() + " tables.");
+
+            return ssTables;
+        }
+
+        /**
+         * Computes a result, or throws an exception if unable to do so.
+         *
+         * @return computed result
+         * @throws Exception if unable to compute a result
+         */
+        public Set<SSTableReader> call() throws Exception
+        {
+            return getUncompactingSSTablesForKey(key);
+        }
     }
 }
