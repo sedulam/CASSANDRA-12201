@@ -21,6 +21,7 @@ package org.apache.cassandra.db.compaction;
 import java.time.LocalTime;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -71,14 +72,17 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     private Set<SSTableReader> getKeyReferences()
     {
         Iterable<SSTableReader> candidates = filterSuspectSSTables(cfs.getUncompactingSSTables());
-        int maxThreshold = cfs.getMaximumCompactionThreshold();
+        int minThreshold = cfs.getMinimumCompactionThreshold();
 
         Set<SSTableReader> ssTablesToCompact = new HashSet<>();
         for (SSTableReader ssTableReader : candidates)
         {
             System.out.println("Searching table " + ssTableReader.getFilename());
             ssTablesToCompact.addAll(searchSsTable(ssTableReader, candidates));
-            if (ssTablesToCompact.size() >= maxThreshold)
+
+            // If after searching a whole table we have a minimum of references, proceed to compact them
+            // This is to prevent spending too much time in finding references.
+            if (ssTablesToCompact.size() >= minThreshold)
             {
                 break;
             }
@@ -98,7 +102,8 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 
         // Get all the keys and the corresponding SSTables in which they exist
         ExecutorService executor = Executors.newCachedThreadPool();
-        Set<Future<Set<SSTableReader>>> threads = new HashSet<>();
+        Set<Future> threads = new HashSet<>();
+        Set<Future> finishedThreads = new HashSet<>();
 
         try(KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata()))
         {
@@ -109,49 +114,80 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                 Callable callable = new KeyReferencesSearcher(key, uncompactingSsTables);
                 Future<Set<SSTableReader>> future = executor.submit(callable);
                 threads.add(future);
+
+                checkFinishedThreads(threads, finishedThreads, tablesWithRepeatedKeys, executor, minThreshold, maxThreshold);
+
+                if (tablesWithRepeatedKeys.size() >= maxThreshold)
+                {
+                    break;
+                }
             }
         }
 
-        Set<Future> finishedThreads = new HashSet<>();
-        boolean allDone = false;
-        while (!allDone)
+        while (true)
         {
-            boolean cycleIsDone = true;
-            for (Future<Set<SSTableReader>> thread : threads)
+            boolean allThreadsDone = checkFinishedThreads(threads, finishedThreads, tablesWithRepeatedKeys, executor, minThreshold, maxThreshold);
+
+            if (allThreadsDone || tablesWithRepeatedKeys.size() >= maxThreshold)
             {
-                if (thread.isDone() && !finishedThreads.contains(thread))
-                {
-                    finishedThreads.add(thread);
-
-                    try
-                    {
-                        Set<SSTableReader> references = thread.get();
-                        if (references.size() >= minThreshold)
-                        {
-                            tablesWithRepeatedKeys. addAll(references);
-
-                            if (tablesWithRepeatedKeys.size() >= maxThreshold)
-                            {
-                                executor.shutdownNow();
-                                return tablesWithRepeatedKeys;
-                            }
-                        }
-                    }
-                    catch (InterruptedException | ExecutionException e)
-                    {
-                        logger.error("One of the threads responsible for finding key references terminated unexpectadly", e);
-                    }
-                }
-                else
-                {
-                    cycleIsDone = false;
-                }
+                break;
             }
-            allDone = cycleIsDone;
-            System.out.println("Still need to finish " + (threads.size() - finishedThreads.size()) + " threads.");
         }
 
         return tablesWithRepeatedKeys;
+    }
+
+    private static boolean checkFinishedThreads(Set<Future> threads, Set<Future> finishedThreads,
+                                                  Set<SSTableReader> tablesWithRepeatedKeys, ExecutorService executor,
+                                                  int minThreshold, int maxThreshold)
+    {
+        for (Future<Set<SSTableReader>> thread : threads)
+        {
+            if (thread.isDone() && !finishedThreads.contains(thread))
+            {
+                finishedThreads.add(thread);
+                try
+                {
+                    Set<SSTableReader> references = thread.get();
+                    if (references.size() >= minThreshold)
+                    {
+                        tablesWithRepeatedKeys.addAll(references);
+
+                        if (tablesWithRepeatedKeys.size() >= maxThreshold)
+                        {
+                            terminateRemainingSearchThreads(threads, finishedThreads);
+                            return true;
+                        }
+                    }
+                }
+                catch (InterruptedException | ExecutionException e)
+                {
+                    logger.error("One of the threads responsible for finding key references terminated unexpectadly", e);
+                }
+            }
+        }
+
+        if ((threads.size() - finishedThreads.size()) > 0)
+        {
+            System.out.println("Still need to finish " + (threads.size() - finishedThreads.size()) + " threads.");
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    private static void terminateRemainingSearchThreads(Set<Future> threads, Set<Future> finishedThreads)
+    {
+        for (Future thread : threads)
+        {
+            if (!finishedThreads.contains(thread))
+            {
+                thread.cancel(true);
+                System.out.println("Thread " + thread.toString() + " terminated.");
+            }
+        }
     }
 
     /**
