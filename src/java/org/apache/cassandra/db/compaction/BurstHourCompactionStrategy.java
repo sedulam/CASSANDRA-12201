@@ -21,7 +21,6 @@ package org.apache.cassandra.db.compaction;
 import java.time.LocalTime;
 import java.util.Collection;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -39,8 +38,10 @@ import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.KeyIterator;
+import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.schema.CompactionParams;
+import org.apache.cassandra.schema.TableMetadata;
 import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 /**
@@ -67,22 +68,46 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 
     /**
      * Check every key of every table, until we've hit the threshold for SSTables with key repetitions.
+     *
      * @return a set of tables that share a set of the same keys
      */
     private Set<SSTableReader> getKeyReferences()
     {
         Iterable<SSTableReader> candidates = filterSuspectSSTables(cfs.getUncompactingSSTables());
         int minThreshold = cfs.getMinimumCompactionThreshold();
+        int maxThreshold = cfs.getMaximumCompactionThreshold();
 
         Set<SSTableReader> ssTablesToCompact = new HashSet<>();
+
+        // Get all the keys and the corresponding SSTables in which they exist
+        ExecutorService executor = Executors.newCachedThreadPool();
+        Set<Future> threads = new HashSet<>();
+        Set<Future> finishedThreads = new HashSet<>();
+
         for (SSTableReader ssTableReader : candidates)
         {
             System.out.println("Searching table " + ssTableReader.getFilename());
-            ssTablesToCompact.addAll(searchSsTable(ssTableReader, candidates));
+
+            KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata());
+            Callable callable = new SSTableReferencesSearcher(candidates, keyIterator, maxThreshold, ssTablesToCompact);
+            Future<Set<SSTableReader>> future = executor.submit(callable);
+            threads.add(future);
+
+            checkFinishedThreads(threads, finishedThreads, ssTablesToCompact, minThreshold, maxThreshold);
 
             // If after searching a whole table we have a minimum of references, proceed to compact them
             // This is to prevent spending too much time in finding references.
             if (ssTablesToCompact.size() >= minThreshold)
+            {
+                break;
+            }
+        }
+
+        while (ssTablesToCompact.size() < minThreshold)
+        {
+            boolean allThreadsDone = checkFinishedThreads(threads, finishedThreads, ssTablesToCompact, minThreshold, maxThreshold);
+
+            if (allThreadsDone || ssTablesToCompact.size() >= maxThreshold)
             {
                 break;
             }
@@ -93,53 +118,9 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         return ssTablesToCompact;
     }
 
-    private Set<SSTableReader> searchSsTable(SSTableReader ssTableReader, Iterable<SSTableReader> uncompactingSsTables)
-    {
-        int minThreshold = cfs.getMinimumCompactionThreshold();
-        int maxThreshold = cfs.getMaximumCompactionThreshold();
-
-        Set<SSTableReader> tablesWithRepeatedKeys = new HashSet<>();
-
-        // Get all the keys and the corresponding SSTables in which they exist
-        ExecutorService executor = Executors.newCachedThreadPool();
-        Set<Future> threads = new HashSet<>();
-        Set<Future> finishedThreads = new HashSet<>();
-
-        try(KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata()))
-        {
-            while (keyIterator.hasNext())
-            {
-                DecoratedKey key = keyIterator.next();
-
-                Callable callable = new KeyReferencesSearcher(key, uncompactingSsTables);
-                Future<Set<SSTableReader>> future = executor.submit(callable);
-                threads.add(future);
-
-                checkFinishedThreads(threads, finishedThreads, tablesWithRepeatedKeys, executor, minThreshold, maxThreshold);
-
-                if (tablesWithRepeatedKeys.size() >= maxThreshold)
-                {
-                    break;
-                }
-            }
-        }
-
-        while (true)
-        {
-            boolean allThreadsDone = checkFinishedThreads(threads, finishedThreads, tablesWithRepeatedKeys, executor, minThreshold, maxThreshold);
-
-            if (allThreadsDone || tablesWithRepeatedKeys.size() >= maxThreshold)
-            {
-                break;
-            }
-        }
-
-        return tablesWithRepeatedKeys;
-    }
-
     private static boolean checkFinishedThreads(Set<Future> threads, Set<Future> finishedThreads,
-                                                  Set<SSTableReader> tablesWithRepeatedKeys, ExecutorService executor,
-                                                  int minThreshold, int maxThreshold)
+                                                Set<SSTableReader> tablesWithRepeatedKeys,
+                                                int minThreshold, int maxThreshold)
     {
         for (Future<Set<SSTableReader>> thread : threads)
         {
@@ -212,16 +193,19 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 
     /**
      * Creates the compaction task object.
-     * @param tables the tables we want to compact
+     *
+     * @param tables   the tables we want to compact
      * @param gcBefore throw away tombstones older than this
      * @return a compaction task object which will be later used to run the compaction per se
      */
     private AbstractCompactionTask createBhcsCompactionTask(Collection<SSTableReader> tables, int gcBefore)
     {
-        if (tables.size() == 0){
+        if (tables.size() == 0)
+        {
             return null;
         }
-        else {
+        else
+        {
             LifecycleTransaction transaction = cfs.getTracker().tryModify(tables, OperationType.COMPACTION);
             return new CompactionTask(cfs, transaction, gcBefore);
         }
@@ -315,38 +299,20 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     }
 
 
-    private static class KeyReferencesSearcher implements Callable
+    private class SSTableReferencesSearcher implements Callable
     {
-        private final DecoratedKey key;
         private final Iterable<SSTableReader> uncompactingSsTables;
+        private final int maxThreshold;
+        private final Set ssTablesWithReferences;
+        private final KeyIterator keyIterator;
 
-        private KeyReferencesSearcher(DecoratedKey key, Iterable<SSTableReader> uncompactingSsTables)
+        private SSTableReferencesSearcher(Iterable<SSTableReader> uncompactingSsTables,
+                                          KeyIterator keyIterator, int maxThreshold, Set ssTablesWithReferences)
         {
-            this.key = key;
+            this.keyIterator = keyIterator;
             this.uncompactingSsTables = uncompactingSsTables;
-        }
-
-        /**
-         * Returns the set of all the uncompacting SSTables which contain this key.
-         * @param key the key that we want to search in all of the SSTables
-         * @return set of table
-         */
-        private Set<SSTableReader> getUncompactingSSTablesForKey(DecoratedKey key)
-        {
-            Set<SSTableReader> ssTables = new HashSet<>();
-
-            System.out.println("Starting scan for key " + key.toString());
-
-            for (SSTableReader ssTable : uncompactingSsTables)
-            {
-                // check if the key actually exists in this sstable, without updating cache and stats
-                if (ssTable.getPosition(key, SSTableReader.Operator.EQ, false) != null)
-                    ssTables.add(ssTable);
-            }
-
-            System.out.println("Key " + key.toString() + " is referenced by " + ssTables.size() + " tables.");
-
-            return ssTables;
+            this.maxThreshold = maxThreshold;
+            this.ssTablesWithReferences = ssTablesWithReferences;
         }
 
         /**
@@ -357,7 +323,30 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
          */
         public Set<SSTableReader> call() throws Exception
         {
-            return getUncompactingSSTablesForKey(key);
+            while (keyIterator.hasNext())
+            {
+                DecoratedKey key = keyIterator.next();
+
+                System.out.println("Starting scan for key " + key.toString());
+
+                for (SSTableReader ssTable : uncompactingSsTables)
+                {
+                    // check if the key actually exists in this sstable, without updating cache and stats
+                    if (ssTable.getPosition(key, SSTableReader.Operator.EQ, false) != null)
+                    {
+                        ssTablesWithReferences.add(ssTable);
+                    }
+                }
+
+                System.out.println("Key " + key.toString() + " is referenced by " + ssTablesWithReferences.size() + " tables.");
+
+                if (ssTablesWithReferences.size() >= maxThreshold)
+                {
+                    break;
+                }
+            }
+
+            return ssTablesWithReferences;
         }
     }
 }
