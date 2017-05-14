@@ -51,7 +51,9 @@ import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 //
 public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 {
-    //TODO implement this
+    //TODO minThreshold is the minimum number of occurrences to trigger the compaction of the key references
+    //TODO maxThreshold is the maximum of tables that we're compacting each time
+
     private volatile int estimatedRemainingTasks;
     //TODO do we really need this variable?
     private final Set<SSTableReader> sstables = new HashSet<>();
@@ -84,26 +86,34 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         Set<Future> threads = new HashSet<>();
         Set<Future> finishedThreads = new HashSet<>();
 
+        /* because candidates is an iterable, we don't know its size, which is required to calculate the number of
+        remaining compaction tasks, hence we use this maxThresholdReached and numberOfCandidates variables to finish the counting of the set
+         */
+        boolean maxThresholdReached = false;
+        int numberOfCandidates = 0;
         for (SSTableReader ssTableReader : candidates)
         {
-            System.out.println("Searching table " + ssTableReader.getFilename());
-
-            KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata());
-            Callable callable = new SSTableReferencesSearcher(candidates, keyIterator, maxThreshold, ssTablesToCompact);
-            Future<Set<SSTableReader>> future = executor.submit(callable);
-            threads.add(future);
-
-            checkFinishedThreads(threads, finishedThreads, ssTablesToCompact, minThreshold, maxThreshold);
-
-            // If after searching a whole table we have a minimum of references, proceed to compact them
-            // This is to prevent spending too much time in finding references.
-            if (ssTablesToCompact.size() >= minThreshold)
+            if (!maxThresholdReached)
             {
-                break;
+                System.out.println("Searching table " + ssTableReader.getFilename());
+
+                KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata());
+                Callable callable = new SSTableReferencesSearcher(candidates, keyIterator, maxThreshold, ssTablesToCompact);
+                Future<Set<SSTableReader>> future = executor.submit(callable);
+                threads.add(future);
+
+                checkFinishedThreads(threads, finishedThreads, ssTablesToCompact, minThreshold, maxThreshold);
+
+                if (ssTablesToCompact.size() >= maxThreshold)
+                {
+                    maxThresholdReached = true;
+                }
             }
+
+            numberOfCandidates++;
         }
 
-        while (ssTablesToCompact.size() < minThreshold)
+        while (ssTablesToCompact.size() < maxThreshold)
         {
             boolean allThreadsDone = checkFinishedThreads(threads, finishedThreads, ssTablesToCompact, minThreshold, maxThreshold);
 
@@ -112,6 +122,8 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                 break;
             }
         }
+
+        estimatedRemainingTasks = numberOfCandidates / cfs.getMaximumCompactionThreshold();
 
         //TODO shall I add trimming of ssTablesToCompact until the reaches the maximum threshold?
 
