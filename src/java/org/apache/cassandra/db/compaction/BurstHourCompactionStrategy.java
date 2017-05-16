@@ -45,15 +45,14 @@ import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 /**
  * This strategy tries to take advantage of periods of the day where there's less I/O.
  * Full description can be found at CASSANDRA-12201.
+ * For BHCS the minimum threshold is the minimum number of tables references for a key, that triggerss its compaction.
+ * The maximum threshold has the same purpose from the other strategies, i.e., the maximum of number tables that we
+ * can compact in each strategy run.
  */
 public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
 {
-    //TODO minThreshold is the minimum number of occurrences to trigger the compaction of the key references
-    //TODO maxThreshold is the maximum of tables that we're compacting each time
-
     private volatile int estimatedRemainingTasks;
     private final Set<SSTableReader> sstables = new HashSet<>();
-    //TODO add logging
     private static final Logger logger = LoggerFactory.getLogger(BurstHourCompactionStrategy.class);
     private final BurstHourCompactionStrategyOptions bhcsOptions;
 
@@ -121,6 +120,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                 break;
             }
         }
+        logger.info("BHCS analysis complete. Will compact " + ssTablesToCompact.size());
 
         estimatedRemainingTasks = numberOfCandidates / cfs.getMaximumCompactionThreshold();
         logger.info("Number of remaining compaction tasks for CFS <" + cfs.getTableName() + ">: " + estimatedRemainingTasks);
@@ -149,6 +149,11 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                         if (tablesWithRepeatedKeys.size() >= maxThreshold)
                         {
                             terminateRemainingSearchThreads(threads, finishedThreads);
+
+                            if(tablesWithRepeatedKeys.size() > maxThreshold)
+                            {
+                                tablesWithRepeatedKeys = trimTablesSet(tablesWithRepeatedKeys, maxThreshold);
+                            }
                             return true;
                         }
                     }
@@ -171,6 +176,23 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         }
     }
 
+    private static Set<SSTableReader> trimTablesSet(Set<SSTableReader> tablesWithRepeatedKeys, int maxThreshold)
+    {
+        Set<SSTableReader> trimmed = new HashSet<>(maxThreshold);
+        int count = 0;
+        for(SSTableReader ssTable : tablesWithRepeatedKeys)
+        {
+            trimmed.add(ssTable);
+            count++;
+            if (count == maxThreshold)
+            {
+                break;
+            }
+        }
+
+        return trimmed;
+    }
+
     private static void terminateRemainingSearchThreads(Set<Future<Set<SSTableReader>>> threads, Set<Future> finishedThreads)
     {
         for (Future thread : threads)
@@ -190,7 +212,6 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      * @param gcBefore throw away tombstones older than this
      * @return the next background/minor compaction task to run; null if nothing to do.
      * <p>
-     * TODO does the following line still applies? If not, change the superclass doc. Repeat for other methods.
      * Is responsible for marking its sstables as compaction-pending.
      */
     public AbstractCompactionTask getNextBackgroundTask(int gcBefore)
@@ -222,6 +243,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         else
         {
             LifecycleTransaction transaction = cfs.getTracker().tryModify(tables, OperationType.COMPACTION);
+            //TODO include BHCS compaction writer
             return new CompactionTask(cfs, transaction, gcBefore);
         }
     }
@@ -264,7 +286,6 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      * Will not be null. (Will throw if user requests an invalid compaction.)
      * <p>
      * Is responsible for marking its sstables as compaction-pending.
-     * TODO DTS, STCS and now BHCS all do basically the same thing in this method. Wouldn't it be better to define this in the superclass and LCS would override it?
      */
     public AbstractCompactionTask getUserDefinedTask(Collection<SSTableReader> sstables, int gcBefore)
     {
@@ -284,8 +305,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public long getMaxSSTableBytes()
     {
-        //TODO why is every strategy, except for LCS, returing this value?
-        return Long.MAX_VALUE;
+        return bhcsOptions.sstableMaxSize * 1024L * 1024L;
     }
 
     public void addSSTable(SSTableReader added)
@@ -346,7 +366,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
             {
                 DecoratedKey key = keyIterator.next();
 
-                logger.debug("Starting scan for key " + key.toString());
+                logger.info("Starting scan for key " + key.toString());
 
                 for (SSTableReader ssTable : uncompactingSsTables)
                 {
@@ -357,7 +377,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                     }
                 }
 
-                logger.debug("Key " + key.toString() + " is referenced by " + ssTablesWithReferences.size() + " tables.");
+                logger.info("Key " + key.toString() + " is referenced by " + ssTablesWithReferences.size() + " tables.");
 
                 if (ssTablesWithReferences.size() >= maxThreshold)
                 {

@@ -26,12 +26,15 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 
 class BurstHourCompactionStrategyOptions
 {
-    private static final String START_TIME_KEY = "start_time";
-    protected LocalTime startTime;
-    private static final String END_TIME_KEY = "end_time";
-    protected LocalTime endTime;
     private static final LocalTime defaultStartTime = LocalTime.MIDNIGHT;
+    private static final String START_TIME_KEY = "start_time";
+    final LocalTime startTime;
     private static final LocalTime defaultEndTime = LocalTime.MIDNIGHT.plusHours(1);
+    private static final String END_TIME_KEY = "end_time";
+    final LocalTime endTime;
+    private static final int SSTABLE_MAX_SIZE_DEFAULT = 100;
+    private static final String SSTABLE_MAX_SIZE_KEY = "sstable_max_size";
+    final int sstableMaxSize;
 
     public BurstHourCompactionStrategyOptions(Map<String, String> options)
     {
@@ -39,18 +42,22 @@ class BurstHourCompactionStrategyOptions
         {
             startTime = defaultStartTime;
             endTime = defaultEndTime;
+            sstableMaxSize = SSTABLE_MAX_SIZE_DEFAULT;
         }
         else
         {
             startTime = options.get(START_TIME_KEY) == null ? defaultStartTime : LocalTime.parse(options.get(START_TIME_KEY));
             endTime = options.get(END_TIME_KEY) == null ? defaultEndTime : LocalTime.parse(options.get(END_TIME_KEY));
+            sstableMaxSize = options.get(SSTABLE_MAX_SIZE_KEY) == null ? SSTABLE_MAX_SIZE_DEFAULT : Integer.parseInt(options.get(SSTABLE_MAX_SIZE_KEY));
         }
     }
 
+    @SuppressWarnings("ResultOfMethodCallIgnored")
     public static Map<String,String> validateOptions(Map<String, String> options, Map<String, String> uncheckedOptions) throws ConfigurationException
     {
         String textStartTime = options.get(START_TIME_KEY);
         String textEndTime = options.get(START_TIME_KEY);
+        String textSstableMaxSize = options.get(SSTABLE_MAX_SIZE_KEY);
         try
         {
             if (textStartTime != null)
@@ -61,6 +68,10 @@ class BurstHourCompactionStrategyOptions
             {
                 LocalTime.parse(textEndTime);
             }
+            if (textSstableMaxSize != null)
+            {
+                Integer.parseInt(textSstableMaxSize);
+            }
         }
         catch (DateTimeParseException e)
         {
@@ -69,6 +80,7 @@ class BurstHourCompactionStrategyOptions
 
         uncheckedOptions.remove(START_TIME_KEY);
         uncheckedOptions.remove(END_TIME_KEY);
+        uncheckedOptions.remove(SSTABLE_MAX_SIZE_KEY);
 
         return uncheckedOptions;
     }

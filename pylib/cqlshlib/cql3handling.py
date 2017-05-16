@@ -108,7 +108,9 @@ class Cql3ParsingRuleSet(CqlParsingRuleSet):
 
     burst_hour_compaction_strategy_options = (
         'start_time',
-        'end_time'
+        'end_time',
+        'min_threshold',
+        'sstable_max_size'
     )
 
     @classmethod
