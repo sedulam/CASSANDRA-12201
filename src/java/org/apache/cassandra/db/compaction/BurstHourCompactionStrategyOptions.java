@@ -34,7 +34,7 @@ class BurstHourCompactionStrategyOptions
     final LocalTime endTime;
     private static final int SSTABLE_MAX_SIZE_DEFAULT = 100;
     private static final String SSTABLE_MAX_SIZE_KEY = "sstable_max_size";
-    final int sstableMaxSize;
+    final long sstableMaxSize;
 
     public BurstHourCompactionStrategyOptions(Map<String, String> options)
     {

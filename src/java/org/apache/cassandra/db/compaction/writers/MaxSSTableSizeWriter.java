@@ -81,7 +81,7 @@ public class MaxSSTableSizeWriter extends CompactionAwareWriter
     /**
      * Gets the estimated total amount of data to write during compaction
      */
-    private static long getTotalWriteSize(Iterable<SSTableReader> nonExpiredSSTables, long estimatedTotalKeys, ColumnFamilyStore cfs, OperationType compactionType)
+    static long getTotalWriteSize(Iterable<SSTableReader> nonExpiredSSTables, long estimatedTotalKeys, ColumnFamilyStore cfs, OperationType compactionType)
     {
         long estimatedKeysBeforeCompaction = 0;
         for (SSTableReader sstable : nonExpiredSSTables)

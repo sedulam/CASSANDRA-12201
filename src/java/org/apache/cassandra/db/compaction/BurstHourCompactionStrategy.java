@@ -111,7 +111,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
             numberOfCandidates++;
         }
 
-        while (ssTablesToCompact.size() < maxThreshold)
+        while (true)
         {
             boolean allThreadsDone = checkFinishedThreads(threads, finishedThreads, ssTablesToCompact, minThreshold, maxThreshold);
 
@@ -120,6 +120,15 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                 break;
             }
         }
+
+        terminateRemainingSearchThreads(threads, finishedThreads);
+
+        // TODO maybe we shouldn't trim the excess tables. We'll just have to comapct them as well some time later
+        if(ssTablesToCompact.size() > maxThreshold)
+        {
+            ssTablesToCompact = trimTablesSet(ssTablesToCompact, maxThreshold);
+        }
+
         logger.info("BHCS analysis complete. Will compact " + ssTablesToCompact.size());
 
         estimatedRemainingTasks = numberOfCandidates / cfs.getMaximumCompactionThreshold();
@@ -129,7 +138,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     }
 
     private static boolean checkFinishedThreads(Set<Future<Set<SSTableReader>>> threads, Set<Future> finishedThreads,
-                                                Set<SSTableReader> tablesWithRepeatedKeys,
+                                                Set<SSTableReader> ssTablesToCompact,
                                                 int minThreshold, int maxThreshold)
     {
         for (Future<Set<SSTableReader>> thread : threads)
@@ -144,18 +153,9 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                     {
                         logger.info("Finished searching one of the candidates tables. Cross references with "
                                     + references.size() + " tables found.");
-                        tablesWithRepeatedKeys.addAll(references);
+                        ssTablesToCompact.addAll(references);
 
-                        if (tablesWithRepeatedKeys.size() >= maxThreshold)
-                        {
-                            terminateRemainingSearchThreads(threads, finishedThreads);
-
-                            if(tablesWithRepeatedKeys.size() > maxThreshold)
-                            {
-                                tablesWithRepeatedKeys = trimTablesSet(tablesWithRepeatedKeys, maxThreshold);
-                            }
-                            return true;
-                        }
+                        break;
                     }
                 }
                 catch (InterruptedException | ExecutionException e)
@@ -243,8 +243,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         else
         {
             LifecycleTransaction transaction = cfs.getTracker().tryModify(tables, OperationType.COMPACTION);
-            //TODO include BHCS compaction writer
-            return new CompactionTask(cfs, transaction, gcBefore);
+            return new BurstHourCompactionTask(cfs, transaction, gcBefore, bhcsOptions.sstableMaxSize * 1024L * 1024L);
         }
     }
 
