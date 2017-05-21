@@ -95,13 +95,9 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         {
             if (!stopSearching.get())
             {
-                logger.info("Searching table " + ssTableReader.getFilename());
-
                 KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata());
 
-                System.out.println("KeyIterator created on SSTable: " + ssTableReader.getFilename());
-
-                Callable<Set<SSTableReader>> callable = new SSTableReferencesSearcher(candidates, keyIterator, maxThreshold, ssTablesToCompact, this.stopSearching);
+                Callable<Set<SSTableReader>> callable = new SSTableReferencesSearcher(candidates, keyIterator, minThreshold, maxThreshold, ssTablesToCompact, this.stopSearching);
                 Future<Set<SSTableReader>> future = executor.submit(callable);
                 threads.add(future);
 
@@ -301,20 +297,22 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     private static class SSTableReferencesSearcher implements Callable<Set<SSTableReader>>
     {
         private final Iterable<SSTableReader> uncompactingSsTables;
-        private final int maxThreshold;
+        private final int minThreshold;
         private final Set<SSTableReader> ssTablesWithReferences;
         private final KeyIterator keyIterator;
         private final AtomicBoolean stopSearching;
+        private final int maxThreshold;
 
         private SSTableReferencesSearcher(Iterable<SSTableReader> uncompactingSsTables,
-                                          KeyIterator keyIterator, int maxThreshold, Set<SSTableReader> ssTablesWithReferences,
+                                          KeyIterator keyIterator, int minThreshold, int maxThreshold, Set<SSTableReader> ssTablesWithReferences,
                                           AtomicBoolean stopSearching)
         {
             this.keyIterator = keyIterator;
             this.uncompactingSsTables = uncompactingSsTables;
-            this.maxThreshold = maxThreshold;
+            this.minThreshold = minThreshold;
             this.ssTablesWithReferences = ssTablesWithReferences;
             this.stopSearching = stopSearching;
+            this.maxThreshold = maxThreshold;
         }
 
         /**
@@ -328,22 +326,25 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
             while (keyIterator.hasNext() && !stopSearching.get())
             {
                 DecoratedKey key = keyIterator.next();
-
-                logger.info("Starting scan for key " + key.toString());
+                Set<SSTableReader> keyReferences = new HashSet<>();
 
                 for (SSTableReader ssTable : uncompactingSsTables)
                 {
                     // check if the key actually exists in this sstable, without updating cache and stats
-                    if (ssTable.getPosition(key, SSTableReader.Operator.EQ, false) != null)
+                    if (ssTable. getPosition(key, SSTableReader.Operator.EQ, false) != null)
                     {
-                        ssTablesWithReferences.add(ssTable);
+                        keyReferences.add(ssTable);
                     }
                 }
 
-                logger.info("Key " + key.toString() + " is referenced by " + ssTablesWithReferences.size() + " tables.");
+                if (keyReferences.size() >= minThreshold)
+                {
+                    ssTablesWithReferences.addAll(keyReferences);
+                }
 
                 if (ssTablesWithReferences.size() >= maxThreshold)
                 {
+                    stopSearching.set(true);
                     break;
                 }
             }
