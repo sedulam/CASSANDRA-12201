@@ -24,6 +24,17 @@ import java.util.Map;
 
 import org.apache.cassandra.exceptions.ConfigurationException;
 
+/**
+ * Custom options for {@link BurstHourCompactionStrategy}:
+ * <ul>
+ *     <li>{@link BurstHourCompactionStrategyOptions#startTime}: The beginning of the time period where compaction can
+ *     occur. Default value = 00:00:00</li>
+ *     <li>{@link BurstHourCompactionStrategyOptions#endTime}: The ending of the time period where compaction can
+ *     occur. Default value = 01:00:00</li>
+ *     <li>{@link BurstHourCompactionStrategyOptions#sstableMaxSize}: maximum size that each produced compacted table
+ *     can have Default value  = 100 MB</li>
+ * </ul>
+ */
 class BurstHourCompactionStrategyOptions
 {
     private static final LocalTime defaultStartTime = LocalTime.MIDNIGHT;
@@ -36,6 +47,11 @@ class BurstHourCompactionStrategyOptions
     private static final String SSTABLE_MAX_SIZE_KEY = "sstable_max_size";
     final long sstableMaxSize;
 
+    /**
+     * Compaction used for {@link BurstHourCompactionStrategy}.
+     * @param options for allowed options, relevant to this strategy,
+     *                see {@link BurstHourCompactionStrategyOptions}
+     */
     public BurstHourCompactionStrategyOptions(Map<String, String> options)
     {
         if (options == null)
@@ -56,7 +72,7 @@ class BurstHourCompactionStrategyOptions
     public static Map<String,String> validateOptions(Map<String, String> options, Map<String, String> uncheckedOptions) throws ConfigurationException
     {
         String textStartTime = options.get(START_TIME_KEY);
-        String textEndTime = options.get(START_TIME_KEY);
+        String textEndTime = options.get(END_TIME_KEY);
         String textSstableMaxSize = options.get(SSTABLE_MAX_SIZE_KEY);
         try
         {
@@ -77,6 +93,11 @@ class BurstHourCompactionStrategyOptions
         {
             throw new ConfigurationException("The value of " + e.getParsedString() + " could not be converted into a valid time", e);
         }
+        catch (NumberFormatException e)
+        {
+            throw new ConfigurationException("The value of " + textSstableMaxSize + " is not a valid integer.", e);
+        }
+
 
         uncheckedOptions.remove(START_TIME_KEY);
         uncheckedOptions.remove(END_TIME_KEY);

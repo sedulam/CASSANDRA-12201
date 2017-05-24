@@ -28,13 +28,21 @@ import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 
 /**
- * This class serves the sole purpose of returning a BurstHourCompactionWriter
- * instead of a DefaultCompactionWriter, which is returned by the superclass, CompactionTask.
+ * This class serves the sole purpose of returning a {@link MaxSSTableSizeWriter}
+ * instead of a {@link org.apache.cassandra.db.compaction.writers.DefaultCompactionWriter},
+ * which is the implementation returned by the superclass, {@link CompactionTask}.
  */
 public class BurstHourCompactionTask extends CompactionTask
 {
     private final long sstableMaxSize;
 
+    /**
+     * See description for {@link BurstHourCompactionTask}.
+     * @param cfs the {@link ColumnFamilyStore} using this compaction strategy
+     * @param txn the SSTables to compact and the operation that will be done on them
+     * @param gcBefore garbage collect before
+     * @param sstableMaxSize maximum size that each produced compacted table can have
+     */
     public BurstHourCompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn,
                                    int gcBefore, long sstableMaxSize)
     {
@@ -42,6 +50,14 @@ public class BurstHourCompactionTask extends CompactionTask
         this.sstableMaxSize = sstableMaxSize;
     }
 
+    /**
+     * See description for {@link BurstHourCompactionTask}.
+     * @param cfs the {@link ColumnFamilyStore} using this compaction strategy
+     * @param directories directories where the output tables will be stored
+     * @param transaction the initial set of SSTables to compact and the operation that will be done on them
+     * @param nonExpiredSSTables the filtered set of SSTables to compact and the operation that will be done on them
+     * @return an instance of {@link MaxSSTableSizeWriter}
+     */
     @Override
     public CompactionAwareWriter getCompactionAwareWriter(ColumnFamilyStore cfs,
                                                           Directories directories,
