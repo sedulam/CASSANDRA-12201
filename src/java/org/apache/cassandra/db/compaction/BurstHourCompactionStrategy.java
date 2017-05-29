@@ -54,7 +54,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     private volatile int estimatedRemainingTasks = 0;
     private final Set<SSTableReader> sstables = new HashSet<>();
     private static final Logger logger = LoggerFactory.getLogger(BurstHourCompactionStrategy.class);
-    private final BurstHourCompactionStrategyOptions bhcsOptions;
+    public final BurstHourCompactionStrategyOptions bhcsOptions;
     /**
      * Controls the several threads that look for keys repeated in several SSTables. When we've reached the
      * maximum threshold for this CFS, this variable will be set to true, and all the threads will stop.
@@ -164,7 +164,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     public AbstractCompactionTask getNextBackgroundTask(int gcBefore)
     {
         LocalTime now = LocalTime.now();
-        boolean isBurstHour = now.isAfter(bhcsOptions.startTime) && now.isBefore(bhcsOptions.endTime);
+        boolean isBurstHour = now.isAfter(bhcsOptions.getStartTime()) && now.isBefore(bhcsOptions.getEndTime());
         if (!isBurstHour)
         {
             return null;

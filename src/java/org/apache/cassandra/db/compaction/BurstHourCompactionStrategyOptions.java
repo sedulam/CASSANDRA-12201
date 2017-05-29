@@ -39,10 +39,10 @@ class BurstHourCompactionStrategyOptions
 {
     private static final LocalTime defaultStartTime = LocalTime.MIDNIGHT;
     private static final String START_TIME_KEY = "start_time";
-    final LocalTime startTime;
+    private LocalTime startTime;
     private static final LocalTime defaultEndTime = LocalTime.MIDNIGHT.plusHours(1);
     private static final String END_TIME_KEY = "end_time";
-    final LocalTime endTime;
+    private LocalTime endTime;
     private static final int SSTABLE_MAX_SIZE_DEFAULT = 100;
     private static final String SSTABLE_MAX_SIZE_KEY = "sstable_max_size";
     final long sstableMaxSize;
@@ -104,6 +104,26 @@ class BurstHourCompactionStrategyOptions
         uncheckedOptions.remove(SSTABLE_MAX_SIZE_KEY);
 
         return uncheckedOptions;
+    }
+
+    public LocalTime getStartTime()
+    {
+        return startTime;
+    }
+
+    public void setStartTime(LocalTime startTime)
+    {
+        this.startTime = startTime;
+    }
+
+    public LocalTime getEndTime()
+    {
+        return endTime;
+    }
+
+    public void setEndTime(LocalTime endTime)
+    {
+        this.endTime = endTime;
     }
 }
 
