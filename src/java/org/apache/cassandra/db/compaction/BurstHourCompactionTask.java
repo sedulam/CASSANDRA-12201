@@ -32,7 +32,7 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
  * instead of a {@link org.apache.cassandra.db.compaction.writers.DefaultCompactionWriter},
  * which is the implementation returned by the superclass, {@link CompactionTask}.
  */
-public class BurstHourCompactionTask extends CompactionTask
+class BurstHourCompactionTask extends CompactionTask
 {
     private final long sstableMaxSize;
 
@@ -43,7 +43,7 @@ public class BurstHourCompactionTask extends CompactionTask
      * @param gcBefore garbage collect before
      * @param sstableMaxSize maximum size that each produced compacted table can have
      */
-    public BurstHourCompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn,
+    BurstHourCompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn,
                                    int gcBefore, long sstableMaxSize)
     {
         super(cfs, txn, gcBefore);

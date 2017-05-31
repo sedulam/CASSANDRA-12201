@@ -54,7 +54,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     private volatile int estimatedRemainingTasks = 0;
     private final Set<SSTableReader> sstables = new HashSet<>();
     private static final Logger logger = LoggerFactory.getLogger(BurstHourCompactionStrategy.class);
-    public final BurstHourCompactionStrategyOptions bhcsOptions;
+    final BurstHourCompactionStrategyOptions bhcsOptions;
     /**
      * Controls the several threads that look for keys repeated in several SSTables. When we've reached the
      * maximum threshold for this CFS, this variable will be set to true, and all the threads will stop.
@@ -65,6 +65,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      * @param cfs the {@link ColumnFamilyStore} that will be using this compaction strategy.
      * @param options the configuration optios chosen for this instance, if any
      */
+    @SuppressWarnings("WeakerAccess")
     public BurstHourCompactionStrategy(ColumnFamilyStore cfs, Map<String, String> options)
     {
         super(cfs, options);
@@ -386,7 +387,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                         if (keyReferences.size() >= minThreshold)
                         {
                             /* This might put more than the maxThreshold of tables in the set, however, if that's the
-                            case no other table will added after these.
+                            case no other table will be added after these.
                              */
                             ssTablesWithReferences.addAll(keyReferences);
                         }

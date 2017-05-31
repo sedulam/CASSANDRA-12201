@@ -38,13 +38,13 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 class BurstHourCompactionStrategyOptions
 {
     private static final LocalTime defaultStartTime = LocalTime.MIDNIGHT;
-    private static final String START_TIME_KEY = "start_time";
+    static final String START_TIME_KEY = "start_time";
     private LocalTime startTime;
     private static final LocalTime defaultEndTime = LocalTime.MIDNIGHT.plusHours(1);
-    private static final String END_TIME_KEY = "end_time";
+    static final String END_TIME_KEY = "end_time";
     private LocalTime endTime;
     private static final int SSTABLE_MAX_SIZE_DEFAULT = 100;
-    private static final String SSTABLE_MAX_SIZE_KEY = "sstable_max_size";
+    static final String SSTABLE_MAX_SIZE_KEY = "sstable_max_size";
     final long sstableMaxSize;
 
     /**
@@ -52,7 +52,7 @@ class BurstHourCompactionStrategyOptions
      * @param options for allowed options, relevant to this strategy,
      *                see {@link BurstHourCompactionStrategyOptions}
      */
-    public BurstHourCompactionStrategyOptions(Map<String, String> options)
+    BurstHourCompactionStrategyOptions(Map<String, String> options)
     {
         if (options == null)
         {
@@ -116,12 +116,12 @@ class BurstHourCompactionStrategyOptions
         this.startTime = startTime;
     }
 
-    public LocalTime getEndTime()
+    LocalTime getEndTime()
     {
         return endTime;
     }
 
-    public void setEndTime(LocalTime endTime)
+    void setEndTime(LocalTime endTime)
     {
         this.endTime = endTime;
     }
