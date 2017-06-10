@@ -209,7 +209,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      */
     public Collection<AbstractCompactionTask> getMaximalTask(int gcBefore, boolean splitOutput)
     {
-        Set<AbstractCompactionTask> tasks = new HashSet<>(1);
+        Set<AbstractCompactionTask> tasks = new HashSet<>();
 
         // estimatedRemainingTasks might be zero when we run for the first time, so we force the first run
         boolean firstIteration = true;
