@@ -58,7 +58,6 @@ class BurstHourCompactionTask extends CompactionTask
      * @param nonExpiredSSTables the filtered set of SSTables to compact and the operation that will be done on them
      * @return an instance of {@link MaxSSTableSizeWriter}
      */
-    @Override
     public CompactionAwareWriter getCompactionAwareWriter(ColumnFamilyStore cfs,
                                                           Directories directories,
                                                           LifecycleTransaction transaction,

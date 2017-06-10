@@ -81,8 +81,8 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     {
         logger.info("Starting Burst Compaction analysis in CFS <" + cfs.getTableName() + ">.");
 
-        Iterable<SSTableReader> candidates = filterSuspectSSTables(filter(cfs.getUncompactingSSTables(), sstables::contains));
-
+        Iterable<SSTableReader> candidates = filterSuspectSSTables(filter(cfs.getUncompactingSSTables(),
+                                                                          sstables::contains));
         int minThreshold = cfs.getMinimumCompactionThreshold();
         int maxThreshold = cfs.getMaximumCompactionThreshold();
 
@@ -108,7 +108,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
             {
                 KeyIterator keyIterator = new KeyIterator(ssTableReader.descriptor, cfs.metadata());
 
-                Thread callable = new SSTableReferencesSearcher(candidates, keyIterator, minThreshold, maxThreshold, ssTablesToCompact, this.stopSearching);
+                Thread callable = new SSTableReferencesSearcher(candidates, keyIterator, minThreshold, maxThreshold, ssTablesToCompact, stopSearching);
                 Future future = executor.submit(callable);
                 threads.add(future);
 
@@ -184,6 +184,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
      * @param gcBefore throw away tombstones older than this
      * @return a compaction task object which will be later used to run the compaction per se
      */
+    @SuppressWarnings("resource")
     private AbstractCompactionTask createBhcsCompactionTask(Collection<SSTableReader> tables, int gcBefore)
     {
         if (tables.size() == 0)
@@ -193,7 +194,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
         else
         {
             LifecycleTransaction transaction = cfs.getTracker().tryModify(tables, OperationType.COMPACTION);
-            return new BurstHourCompactionTask(cfs, transaction, gcBefore, bhcsOptions.sstableMaxSize * 1024L * 1024L);
+            return new BurstHourCompactionTask(cfs, transaction, gcBefore, getMaxSSTableBytes());
         }
     }
 
@@ -324,7 +325,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     /**
      * Used to search references in other tables for each key returned by {@link SSTableReferencesSearcher#keyIterator}.
      * Only keys with a multiplicity of at least {@link SSTableReferencesSearcher#minThreshold} will be considered for
-     * compaction. When the number of gathered tables in {@link SSTableReferencesSearcher#ssTablesWithReferences}
+     * compaction. When the number of gathered tables in {@link SSTableReferencesSearcher#ssTablesToCompact}
      * reaches a minimum of {@link SSTableReferencesSearcher#maxThreshold}, the
      * {@link SSTableReferencesSearcher#stopSearching} control variable will be set to true, triggering the termination
      * of all active search threads.
@@ -333,7 +334,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
     {
         private final Iterable<SSTableReader> uncompactingSsTables;
         private final int minThreshold;
-        private final Set<SSTableReader> ssTablesWithReferences;
+        private final Set<SSTableReader> ssTablesToCompact;
         private final KeyIterator keyIterator;
         private final AtomicBoolean stopSearching;
         private final int maxThreshold;
@@ -346,17 +347,17 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
          * @param minThreshold the minimum of key multiplicity that will trigger the compaction of the tables with
          *                     copies
          * @param maxThreshold the maximum number of tables that we can accept for each compaction task
-         * @param ssTablesWithReferences the set that's acccepting SSTables for compaction from every thread
+         * @param ssTablesToCompact the set that's acccepting SSTables for compaction from every thread
          * @param stopSearching the control variable for all the search threads. Volatile, with atomic access.
          */
         private SSTableReferencesSearcher(Iterable<SSTableReader> uncompactingSsTables,
-                                          KeyIterator keyIterator, int minThreshold, int maxThreshold, Set<SSTableReader> ssTablesWithReferences,
-                                          AtomicBoolean stopSearching)
+                                          KeyIterator keyIterator, int minThreshold, int maxThreshold,
+                                          Set<SSTableReader> ssTablesToCompact, AtomicBoolean stopSearching)
         {
             this.keyIterator = keyIterator;
             this.uncompactingSsTables = uncompactingSsTables;
             this.minThreshold = minThreshold;
-            this.ssTablesWithReferences = ssTablesWithReferences;
+            this.ssTablesToCompact = ssTablesToCompact;
             this.stopSearching = stopSearching;
             this.maxThreshold = maxThreshold;
         }
@@ -374,7 +375,7 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                 for (SSTableReader ssTable : uncompactingSsTables)
                 {
                     // check if the key actually exists in this sstable, without updating cache and stats
-                    if (ssTable. getPosition(key, SSTableReader.Operator.EQ, false) != null)
+                    if (ssTable.getPosition(key, SSTableReader.Operator.EQ, false) != null)
                     {
                         keyReferences.add(ssTable);
                     }
@@ -389,10 +390,10 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
                             /* This might put more than the maxThreshold of tables in the set, however, if that's the
                             case no other table will be added after these.
                              */
-                            ssTablesWithReferences.addAll(keyReferences);
+                            ssTablesToCompact.addAll(keyReferences);
                         }
 
-                        if (ssTablesWithReferences.size() >= maxThreshold)
+                        if (ssTablesToCompact.size() >= maxThreshold)
                         {
                             stopSearching.set(true);
                             break;
