@@ -42,16 +42,27 @@ public class LongBurstHourCompactionTest
 {
     private static final String KEYSPACE1 = "Keyspace1";
     private static final String CF_STANDARD = "Standard1";
+    private static final String sizeOptionkey = "sstable_max_size";
+    private static final String sizeOptionValue = "30";
 
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
-        Map<String, String> compactionOptions = Collections.singletonMap("tombstone_compaction_interval", "1");
         SchemaLoader.prepareServer();
+
+        Map<String, String> options = new HashMap<>();
+        options.put(CompactionParams.Option.MIN_THRESHOLD.toString(),
+                    Integer.toString(CompactionParams.DEFAULT_MIN_THRESHOLD));
+        options.put(CompactionParams.Option.MAX_THRESHOLD.toString(),
+                    Integer.toString(CompactionParams.DEFAULT_MAX_THRESHOLD));
+        options.put(sizeOptionkey, sizeOptionValue);
+
+        CompactionParams compactionParams = CompactionParams.bhcs(options);
+
         SchemaLoader.createKeyspace(KEYSPACE1,
                                     KeyspaceParams.simple(1),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD)
-                                                .compaction(CompactionParams.bhcs(compactionOptions)));
+                                                .compaction(compactionParams));
     }
 
     @Before
@@ -96,7 +107,6 @@ public class LongBurstHourCompactionTest
         Keyspace keyspace = Keyspace.open(KEYSPACE1);
         ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("Standard1");
 
-        long keysInserted = 0;
         long maxTimestampExpected = Long.MIN_VALUE;
         for (int k = 0; k < sstableCount; k++)
         {
@@ -112,7 +122,6 @@ public class LongBurstHourCompactionTest
                     builder.newRow(String.valueOf(i)).add("val", String.valueOf(i));
                 }
                 rows.put(key, builder.build());
-                keysInserted++;
             }
             Descriptor descriptor = cfs.newSSTableDescriptor(cfs.getDirectories().getDirectoryForNewSSTables());
             Collection<SSTableReader> readers = SSTableUtils.prepare().dest(descriptor).write(rows);
