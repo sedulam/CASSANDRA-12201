@@ -123,12 +123,22 @@ public class BurstHourCompactionStrategy extends AbstractCompactionStrategy
             checkIfAllThreadsAreDone(threads, finishedThreads);
         }
 
-        estimatedRemainingTasks = numberOfCandidates / maxThreshold;
+        estimatedRemainingTasks = calculateEstimatedRemainingTasks(numberOfCandidates,ssTablesToCompact.size(), maxThreshold);
 
         logger.info("Number of remaining compaction tasks for CFS <" + cfs.getTableName() + ">: " + estimatedRemainingTasks);
         logger.info("BHCS analysis complete. Will compact " + ssTablesToCompact.size());
 
         return ssTablesToCompact;
+    }
+
+    private int calculateEstimatedRemainingTasks(int numberOfCandidates, int ssTablesToCompactSize, int maxThreshold)
+    {
+        int amount = 0;
+        if (ssTablesToCompactSize >= maxThreshold)
+        {
+            amount = (numberOfCandidates - ssTablesToCompactSize) / maxThreshold;
+        }
+        return amount;
     }
 
     /**

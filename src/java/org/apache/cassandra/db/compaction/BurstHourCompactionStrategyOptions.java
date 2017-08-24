@@ -43,7 +43,7 @@ class BurstHourCompactionStrategyOptions
     private static final LocalTime defaultEndTime = LocalTime.MIDNIGHT.plusHours(1);
     static final String END_TIME_KEY = "end_time";
     private LocalTime endTime;
-    private static final int SSTABLE_MAX_SIZE_DEFAULT = 100;
+    private static final int SSTABLE_MAX_SIZE_DEFAULT = 30;
     static final String SSTABLE_MAX_SIZE_KEY = "sstable_max_size";
     final long sstableMaxSize;
 
