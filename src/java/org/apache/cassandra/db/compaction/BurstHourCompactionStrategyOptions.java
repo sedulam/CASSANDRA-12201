@@ -28,11 +28,11 @@ import org.apache.cassandra.exceptions.ConfigurationException;
  * Custom options for {@link BurstHourCompactionStrategy}:
  * <ul>
  *     <li>{@link BurstHourCompactionStrategyOptions#startTime}: The beginning of the time period where compaction can
- *     occur. Default value = 00:00:00</li>
+ *     occur.</li>
  *     <li>{@link BurstHourCompactionStrategyOptions#endTime}: The ending of the time period where compaction can
- *     occur. Default value = 01:00:00</li>
+ *     occur.</li>
  *     <li>{@link BurstHourCompactionStrategyOptions#sstableMaxSize}: maximum size that each produced compacted table
- *     can have Default value  = 100 MB</li>
+ *     can have.</li>
  * </ul>
  */
 class BurstHourCompactionStrategyOptions
